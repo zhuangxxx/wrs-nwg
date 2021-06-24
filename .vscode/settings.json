@@ -1,3 +1,7 @@
 {
     "rust-analyzer.server.path": "~/.rustup/toolchains/nightly-x86_64-pc-windows-msvc/bin/rust-analyzer",
+    "cSpell.words": [
+        "chrono",
+        "rusqlite"
+    ],
 }

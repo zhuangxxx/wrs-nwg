@@ -8,3 +8,5 @@ edition = "2018"
 [dependencies]
 nwg = { version = "1", package = "native-windows-gui" }
 nwd = { version = "1", package = "native-windows-derive" }
+chrono = "0.4"
+rusqlite = { version = "0.25", features = ["chrono", "bundled"] }
