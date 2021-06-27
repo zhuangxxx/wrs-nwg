@@ -11,20 +11,20 @@ mod security_app;
 pub struct BasicApp {
     security_handle: RefCell<Option<thread::JoinHandle<()>>>,
 
-    #[nwg_control(size:(900,600), center:true, title:"水资源", flags:"MAIN_WINDOW|VISIBLE")]
-    #[nwg_events(OnWindowClose:[Self::window_close], OnResize:[Self::window_resize], OnWindowMaximize:[Self::window_resize])]
+    #[nwg_control(size: (900, 600), center: true, title: "水资源", flags: "MAIN_WINDOW | VISIBLE")]
+    #[nwg_events(OnWindowClose: [Self::window_close], OnResize: [Self::window_resize], OnWindowMaximize: [Self::window_resize])]
     window: nwg::Window,
 
-    #[nwg_control(size:(80,30), position:(900/2-40-100, 600/10*8), text:"水安全")]
-    #[nwg_events(OnButtonClick:[Self::security_button_click])]
+    #[nwg_control(size: (120, 40), position: (900 / 2 - 60 - 160, 600 / 10 * 8), text: "水安全")]
+    #[nwg_events(OnButtonClick: [Self::security_button_click])]
     security_button: nwg::Button,
 
-    #[nwg_control(size:(80,30), position:(900/2-40, 600/10*8), text:"水环境")]
-    #[nwg_events(OnButtonClick:[Self::environment_button_click])]
+    #[nwg_control(size: (120, 40), position: (900 / 2 - 60, 600 / 10 * 8), text: "水环境")]
+    #[nwg_events(OnButtonClick: [Self::environment_button_click])]
     environment_button: nwg::Button,
 
-    #[nwg_control(size:(80,30), position:(900/2-40+100, 600/10*8), text:"退出")]
-    #[nwg_events(OnButtonClick:[Self::quit_button_click])]
+    #[nwg_control(size: (120, 40), position: (900 / 2 - 60 + 160, 600 / 10 * 8), text: "退出")]
+    #[nwg_events(OnButtonClick: [Self::quit_button_click])]
     quit_button: nwg::Button,
 }
 
@@ -38,11 +38,11 @@ impl BasicApp {
         let width = width as i32;
         let height = height as i32;
         self.security_button
-            .set_position(width / 2 - 40 - 100, height / 10 * 8);
+            .set_position(width / 2 - 60 - 160, height / 10 * 8);
         self.environment_button
-            .set_position(width / 2 - 40, height / 10 * 8);
+            .set_position(width / 2 - 60, height / 10 * 8);
         self.quit_button
-            .set_position(width / 2 - 40 + 100, height / 10 * 8);
+            .set_position(width / 2 - 60 + 160, height / 10 * 8);
     }
 
     fn security_button_click(&self) {
@@ -72,7 +72,19 @@ impl BasicApp {
 /// set entry point named WinMain
 fn main() {
     nwg::init().expect("Failed to init Native Windows GUI");
-    nwg::Font::set_global_family("Microsoft YaHei UI").expect("Failed to set default font");
+
+    // nwg::Font::set_global_family("Microsoft YaHei UI").expect("Failed to set default font");
+
+    let mut font = nwg::Font::default();
+    if nwg::Font::builder()
+        .size(16)
+        .family("NSimSum")
+        .weight(400)
+        .build(&mut font)
+        .is_ok()
+    {
+        nwg::Font::set_global_default(Some(font));
+    }
 
     let _app = BasicApp::build_ui(Default::default()).expect("Failed to build UI");
 
