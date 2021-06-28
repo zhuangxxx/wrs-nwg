@@ -1,14 +1,17 @@
 use std::{
     cell::RefCell,
+    ffi::OsString,
     thread::{self, JoinHandle},
 };
 
-use chrono::{DateTime, SecondsFormat, Utc};
+use calamine::{Reader, Xlsx};
+use chrono::{DateTime, SecondsFormat, TimeZone, Utc};
 use nwd::{NwgPartial, NwgUi};
 use nwg::NativeUi;
 use rusqlite::{params, Connection};
 use std::fmt::Debug;
 
+// TODO 实现Copy
 #[derive(Debug, Clone)]
 pub struct SecurityModel {
     id: u32,
@@ -938,11 +941,10 @@ impl SecurityFormWindow {
             if let Ok(conn) = Connection::open("./water-resources.db") {
                 if let Ok(num) = if model.id > 0 {
                     conn.execute(
-                    r#"UPDATE water_security SET
-                        level=?1, name=?2, area=?3, start=?4, end=?5, river_width=?6, elevation=?7, ratio=?8, 
+                        r#"UPDATE water_security SET
+level=?1, name=?2, area=?3, start=?4, end=?5, river_width=?6, elevation=?7, ratio=?8, 
 line=?9, allow=?10, safe=?11, depth=?12, channel_width=?13, threshold=?14, dredging=?15, time=?16
-WHERE id=?17
-            "#,
+WHERE id=?17"#,
                         params![
                             model.level,
                             model.name,
@@ -1101,7 +1103,7 @@ impl SecurityApp {
 
     fn load_data_view(&self) {
         if let Ok(conn) = Connection::open("./water-resources.db") {
-            if let Ok(mut stmt) = conn.prepare("SELECT * FROM water_security") {
+            if let Ok(mut stmt) = conn.prepare("SELECT id, level, name, area, start, end, river_width, elevation, ratio, line, allow, safe, depth, channel_width, threshold, dredging, time FROM water_security") {
                 if let Ok(mut security_models) =
                     stmt.query_and_then([], |row| -> rusqlite::Result<SecurityModel> {
                         Ok(SecurityModel {
@@ -1173,14 +1175,288 @@ impl SecurityApp {
         }
     }
 
-    // TODO 数据导入功能
+    // TODO 分文件类型导入
+    // TODO 自动识别工作表
     fn import_menu_open(&self) {
-        nwg::simple_message("导入", "数据导入功能");
+        let mut import_file_dialog = nwg::FileDialog::default();
+
+        if let Ok(_) = nwg::FileDialog::builder()
+            .title("请选择导入文件")
+            .action(nwg::FileDialogAction::Open)
+            .filters("Excel文件(*.xls;*.xlsx;*.xlsm;*.xlsb;*.xla;*.xlam)")
+            .build(&mut import_file_dialog)
+        {
+            let mut models = vec![];
+            if import_file_dialog.run(Some(&self.window)) {
+                if let Ok(import_file) = import_file_dialog.get_selected_item() {
+                    if let Ok(mut workbook) =
+                        calamine::open_workbook::<Xlsx<_>, OsString>(import_file)
+                    {
+                        if let Some(Ok(range)) = workbook.worksheet_range("Sheet1") {
+                            let mut current_row = 0usize;
+                            let mut columns = vec![];
+                            for row in range.rows() {
+                                if current_row == 0 {
+                                    for cell in row {
+                                        let column = match cell.get_string() {
+                                            Some("编号") => "id",
+                                            Some("河道防洪排涝等级") => "level",
+                                            Some("河道名称") => "name",
+                                            Some("河道所属辖区") => "area",
+                                            Some("河道起点") => "start",
+                                            Some("河道终点") => "end",
+                                            Some("河道宽度(m)") => "river_width",
+                                            Some("边坡比") => "ratio",
+                                            Some("设计河底高程(m)") => "elevation",
+                                            Some("设计洪水水位(m)") => "line",
+                                            Some("是否允许浪爬高") => "allow",
+                                            Some("安全超高(m)") => "safe",
+                                            Some("淤积深度(m)") => "depth",
+                                            Some("河槽宽度(m)") => "channel_width",
+                                            Some("淤积阈值(m)") => "threshold",
+                                            Some("清淤判断") => "dredging",
+                                            Some("录入时间") => "time",
+                                            _ => "",
+                                        };
+                                        columns.push(column);
+                                    }
+                                } else {
+                                    let mut current_cell = 0usize;
+                                    let mut model = SecurityModel::default();
+                                    for cell in row {
+                                        if current_cell >= columns.len() {
+                                            continue;
+                                        }
+                                        match columns[current_cell] {
+                                            "id" => {
+                                                if let Some(id) = cell.get_int() {
+                                                    model.id = id as u32;
+                                                }
+                                            }
+                                            "level" => {
+                                                if let Some(level) = cell.get_int() {
+                                                    model.level = level as u32;
+                                                }
+                                            }
+                                            "name" => {
+                                                if let Some(name) = cell.get_string() {
+                                                    model.name = String::from(name);
+                                                }
+                                            }
+                                            "area" => {
+                                                if let Some(area) = cell.get_string() {
+                                                    model.area = String::from(area);
+                                                }
+                                            }
+                                            "start" => {
+                                                if let Some(start) = cell.get_string() {
+                                                    model.start = String::from(start);
+                                                }
+                                            }
+                                            "end" => {
+                                                if let Some(end) = cell.get_string() {
+                                                    model.end = String::from(end);
+                                                }
+                                            }
+                                            "river_width" => {
+                                                if let Some(river_width) = cell.get_float() {
+                                                    model.river_width = river_width as f32;
+                                                }
+                                            }
+                                            "ratio" => {
+                                                if let Some(ratio) = cell.get_float() {
+                                                    model.ratio = ratio as f32;
+                                                }
+                                            }
+                                            "elevation" => {
+                                                if let Some(elevation) = cell.get_float() {
+                                                    model.elevation = elevation as f32;
+                                                }
+                                            }
+                                            "line" => {
+                                                if let Some(line) = cell.get_float() {
+                                                    model.line = line as f32;
+                                                }
+                                            }
+                                            "allow" => {
+                                                if let Some(allow) = cell.get_float() {
+                                                    model.allow = allow as f32;
+                                                }
+                                            }
+                                            "safe" => {
+                                                if let Some(safe) = cell.get_float() {
+                                                    model.safe = safe as f32;
+                                                }
+                                            }
+                                            "depth" => {
+                                                if let Some(depth) = cell.get_float() {
+                                                    model.depth = depth as f32;
+                                                }
+                                            }
+                                            "channel_width" => {
+                                                if let Some(channel_width) = cell.get_float() {
+                                                    model.channel_width = channel_width as f32;
+                                                }
+                                            }
+                                            "threshold" => {
+                                                if let Some(threshold) = cell.get_float() {
+                                                    model.threshold = threshold as f32;
+                                                }
+                                            }
+                                            "dredging" => {
+                                                if let Some(dredging) = cell.get_string() {
+                                                    model.dredging = String::from(dredging);
+                                                }
+                                            }
+                                            "time" => {
+                                                if let Some(time) = cell.get_string() {
+                                                    if time.contains("+") || time.contains("Z") {
+                                                        if let Ok(time) =
+                                                            DateTime::parse_from_rfc3339(time)
+                                                        {
+                                                            model.time = Utc.from_utc_datetime(
+                                                                &time.naive_utc(),
+                                                            );
+                                                        } else {
+                                                            model.time = Utc::now();
+                                                        }
+                                                    } else {
+                                                        model.time = match Utc.datetime_from_str(
+                                                            time,
+                                                            "%Y-%m-%d %H:%M:%S",
+                                                        ) {
+                                                            Ok(time) => time,
+                                                            _ => Utc::now(),
+                                                        };
+                                                    }
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                        current_cell += 1;
+                                    }
+                                    models.push(model);
+                                }
+                                current_row += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            if let Ok(conn) = Connection::open("./water-resources.db") {
+                let (mut insert_num, mut update_num, mut failed_num) = (0u32, 0u32, 0u32);
+                for mut model in models {
+                    if let Ok(id) = conn.query_row(
+                        "SELECT id FROM water_security WHERE name=?1 and area=?2",
+                        [model.name.clone(), model.area.clone()],
+                        |row| row.get(0),
+                    ) {
+                        model.id = id;
+                    } else {
+                        if model.id > 0 {
+                            match conn.query_row(
+                                "SELECT id FROM water_security WHERE id=?1",
+                                [model.id],
+                                |row| -> rusqlite::Result<u32> { row.get(0) },
+                            ) {
+                                Err(_) => model.id = 0,
+                                _ => {}
+                            }
+                        }
+                    }
+                    if let Ok(num) = if model.id > 0 {
+                        conn.execute(
+                            r#"UPDATE water_security SET
+level=?1, name=?2, area=?3, start=?4, end=?5, river_width=?6, elevation=?7, ratio=?8, 
+line=?9, allow=?10, safe=?11, depth=?12, channel_width=?13, threshold=?14, dredging=?15, time=?16
+WHERE id=?17"#,
+                            params![
+                                model.level,
+                                model.name,
+                                model.area,
+                                model.start,
+                                model.end,
+                                model.river_width,
+                                model.elevation,
+                                model.ratio,
+                                model.line,
+                                model.allow,
+                                model.safe,
+                                model.depth,
+                                model.channel_width,
+                                model.threshold,
+                                model.dredging,
+                                model.time,
+                                model.id
+                            ],
+                        )
+                    } else {
+                        conn.execute(
+                    r#"INSERT INTO 
+water_security(level, name, area, start, end, river_width, elevation, ratio, line, allow, safe, depth, channel_width, threshold, dredging, time) 
+VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"#,
+                        params![
+                            model.level,
+                            model.name,
+                            model.area,
+                            model.start,
+                            model.end,
+                            model.river_width,
+                            model.elevation,
+                            model.ratio,
+                            model.line,
+                            model.allow,
+                            model.safe,
+                            model.depth,
+                            model.channel_width,
+                            model.threshold,
+                            model.dredging,
+                            model.time
+                        ],
+                    )
+                    } {
+                        if num == 1 {
+                            if model.id > 0 {
+                                update_num += 1;
+                            } else {
+                                insert_num += 1;
+                            }
+                        } else {
+                            failed_num += 1;
+                        }
+                    } else {
+                        failed_num += 1;
+                    }
+                }
+                nwg::simple_message(
+                    "导入完成",
+                    format!(
+                        "导入完成，新增{}条，更新{}条，失败{}条",
+                        insert_num, update_num, failed_num
+                    )
+                    .as_str(),
+                );
+                self.reload_menu_selected();
+            }
+        }
     }
 
     // TODO 数据导出功能
     fn export_menu_open(&self) {
-        nwg::simple_message("导出", "数据导出功能");
+        let mut export_file_dialog = nwg::FileDialog::default();
+
+        if let Ok(_) = nwg::FileDialog::builder()
+            .title("请选择导入文件")
+            .action(nwg::FileDialogAction::Save)
+            .filters("Excel文件(*.xls;*.xlsx;*.xlsm;*.xlsb;*.xla;*.xlam)")
+            .build(&mut export_file_dialog)
+        {
+            if export_file_dialog.run(Some(&self.window)) {
+                if let Ok(export_file) = export_file_dialog.get_selected_item() {
+                    nwg::simple_message("导入", export_file.to_str().unwrap());
+                }
+            }
+        }
     }
 
     fn create_menu_open(&self) {
