@@ -9,6 +9,7 @@ use chrono::{DateTime, SecondsFormat, TimeZone, Utc};
 use nwd::{NwgPartial, NwgUi};
 use nwg::NativeUi;
 use rusqlite::{params, Connection};
+use simple_excel_writer::{row, Column, Row, Workbook};
 use std::fmt::Debug;
 
 // TODO 实现Copy
@@ -1441,19 +1442,115 @@ VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"#,
         }
     }
 
-    // TODO 数据导出功能
     fn export_menu_open(&self) {
         let mut export_file_dialog = nwg::FileDialog::default();
 
         if let Ok(_) = nwg::FileDialog::builder()
-            .title("请选择导入文件")
+            .title("请选择导出位置")
             .action(nwg::FileDialogAction::Save)
             .filters("Excel文件(*.xls;*.xlsx;*.xlsm;*.xlsb;*.xla;*.xlam)")
             .build(&mut export_file_dialog)
         {
             if export_file_dialog.run(Some(&self.window)) {
                 if let Ok(export_file) = export_file_dialog.get_selected_item() {
-                    nwg::simple_message("导入", export_file.to_str().unwrap());
+                    let mut workbook = Workbook::create(export_file.to_str().unwrap());
+                    let mut sheet = workbook.create_sheet("Sheet1");
+
+                    sheet.add_column(Column { width: 30.0 });
+                    sheet.add_column(Column { width: 30.0 });
+                    sheet.add_column(Column { width: 30.0 });
+                    sheet.add_column(Column { width: 30.0 });
+                    sheet.add_column(Column { width: 30.0 });
+                    sheet.add_column(Column { width: 30.0 });
+                    sheet.add_column(Column { width: 30.0 });
+                    sheet.add_column(Column { width: 30.0 });
+                    sheet.add_column(Column { width: 30.0 });
+                    sheet.add_column(Column { width: 30.0 });
+                    sheet.add_column(Column { width: 30.0 });
+                    sheet.add_column(Column { width: 30.0 });
+                    sheet.add_column(Column { width: 30.0 });
+                    sheet.add_column(Column { width: 30.0 });
+                    sheet.add_column(Column { width: 30.0 });
+                    sheet.add_column(Column { width: 30.0 });
+                    sheet.add_column(Column { width: 30.0 });
+
+                    if let Ok(_) = workbook
+                        .write_sheet(&mut sheet, |sheet_writer| {
+                            sheet_writer.append_row(row![
+                                "编号",
+                                "河道防洪排涝等级",
+                                "河道名称",
+                                "河道所属辖区",
+                                "河道起点",
+                                "河道终点",
+                                "河道宽度(m)",
+                                "边坡比",
+                                "设计河底高程(m)",
+                                "设计洪水水位(m)",
+                                "是否允许浪爬高",
+                                "安全超高(m)",
+                                "淤积深度(m)",
+                                "河槽宽度(m)",
+                                "淤积阈值(m)",
+                                "清淤判断",
+                                "录入时间"
+                            ])?;
+                            if let Ok(conn) = Connection::open("./water-resources.db") {
+                                if let Ok(mut stmt) = conn.prepare(
+                                    "SELECT id, level, name, area, start, end, river_width, elevation, ratio, line, allow, safe, depth, channel_width, threshold, dredging, time FROM water_security"
+                                ) {
+                                    if let Ok(mut security_models) = stmt.query_and_then([], |row| -> rusqlite::Result<SecurityModel> {
+                                        Ok(SecurityModel {
+                                            id: row.get(0)?,
+                                            level: row.get(1)?,
+                                            name: row.get(2)?,
+                                            area: row.get(3)?,
+                                            start: row.get(4)?,
+                                            end: row.get(5)?,
+                                            river_width: row.get(6)?,
+                                            elevation: row.get(7)?,
+                                            ratio: row.get(8)?,
+                                            line: row.get(9)?,
+                                            allow: row.get(10)?,
+                                            safe: row.get(11)?,
+                                            depth: row.get(12)?,
+                                            channel_width: row.get(13)?,
+                                            threshold: row.get(14)?,
+                                            dredging: row.get(15)?,
+                                            time: row.get(16)?,
+                                        })
+                                    }) {
+                                        let mut row_num = 0usize;
+                                        while let Some(Ok(model)) = security_models.next() {
+                                            sheet_writer.append_row(row![
+                                                model.id.to_string(),
+                                                model.level.to_string(),
+                                                model.name,
+                                                model.area,
+                                                model.start,
+                                                model.end,
+                                                model.river_width.to_string(),
+                                                model.elevation.to_string(),
+                                                model.ratio.to_string(),
+                                                model.line.to_string(),
+                                                model.allow.to_string(),
+                                                model.safe.to_string(),
+                                                model.depth.to_string(),
+                                                model.channel_width.to_string(),
+                                                model.threshold.to_string(),
+                                                model.dredging,
+                                                model.time.to_rfc3339_opts(SecondsFormat::Secs, true)
+                                            ])?;
+                                            row_num += 1;
+                                        }
+                                        nwg::simple_message("导出", format!("导出完成，共{}条数据", row_num).as_str());
+                                    }
+                                }
+                            }
+                            Ok(())
+                        }) {}
+
+                    if let Ok(_) = workbook.close() {}
                 }
             }
         }
