@@ -8,55 +8,10 @@ use calamine::{Reader, Xlsx};
 use chrono::{DateTime, SecondsFormat, TimeZone, Utc};
 use nwd::{NwgPartial, NwgUi};
 use nwg::NativeUi;
-use rusqlite::{params, Connection};
+use rusqlite::Result;
 use simple_excel_writer::{row, Column, Row, Workbook};
-use std::fmt::Debug;
 
-// TODO 实现Copy
-#[derive(Debug, Clone)]
-pub struct SecurityModel {
-    id: u32,
-    level: u32,
-    name: String,
-    area: String,
-    start: String,
-    end: String,
-    river_width: f32,
-    ratio: f32,
-    elevation: f32,
-    line: f32,
-    allow: f32,
-    safe: f32,
-    depth: f32,
-    channel_width: f32,
-    threshold: f32,
-    dredging: String,
-    time: DateTime<Utc>,
-}
-
-impl Default for SecurityModel {
-    fn default() -> Self {
-        Self {
-            id: Default::default(),
-            level: Default::default(),
-            name: Default::default(),
-            area: Default::default(),
-            start: Default::default(),
-            end: Default::default(),
-            river_width: Default::default(),
-            ratio: Default::default(),
-            elevation: Default::default(),
-            line: Default::default(),
-            allow: Default::default(),
-            safe: Default::default(),
-            depth: Default::default(),
-            channel_width: Default::default(),
-            threshold: Default::default(),
-            dredging: Default::default(),
-            time: Utc::now(),
-        }
-    }
-}
+use crate::{db::Db, security_model::SecurityModel};
 
 enum SecurityFormError {
     InvalidInput(String, String),
@@ -255,6 +210,7 @@ pub struct SecurityFormWindow {
 }
 
 impl SecurityFormWindow {
+    // TODO 改为Db句柄
     pub fn window_open(model: Option<SecurityModel>) -> thread::JoinHandle<SecurityModel> {
         thread::spawn(move || {
             let app = Self::build_ui(Default::default()).expect("Failed to build SecurityApp UI");
@@ -939,66 +895,19 @@ impl SecurityFormWindow {
             model.dredging = self.security_form_ui.dredging_input.text().parse().unwrap();
             model.time = Utc::now();
 
-            if let Ok(conn) = Connection::open("./water-resources.db") {
-                if let Ok(num) = if model.id > 0 {
-                    conn.execute(
-                        r#"UPDATE water_security SET
-level=?1, name=?2, area=?3, start=?4, end=?5, river_width=?6, elevation=?7, ratio=?8, 
-line=?9, allow=?10, safe=?11, depth=?12, channel_width=?13, threshold=?14, dredging=?15, time=?16
-WHERE id=?17"#,
-                        params![
-                            model.level,
-                            model.name,
-                            model.area,
-                            model.start,
-                            model.end,
-                            model.river_width,
-                            model.elevation,
-                            model.ratio,
-                            model.line,
-                            model.allow,
-                            model.safe,
-                            model.depth,
-                            model.channel_width,
-                            model.threshold,
-                            model.dredging,
-                            model.time,
-                            model.id
-                        ],
-                    )
-                } else {
-                    conn.execute(
-                    r#"INSERT INTO 
-water_security(level, name, area, start, end, river_width, elevation, ratio, line, allow, safe, depth, channel_width, threshold, dredging, time) 
-VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"#,
-                        params![
-                            model.level,
-                            model.name,
-                            model.area,
-                            model.start,
-                            model.end,
-                            model.river_width,
-                            model.elevation,
-                            model.ratio,
-                            model.line,
-                            model.allow,
-                            model.safe,
-                            model.depth,
-                            model.channel_width,
-                            model.threshold,
-                            model.dredging,
-                            model.time
-                        ],
-                    )
-                } {
-                    if num == 1 {
-                        nwg::simple_message("提示", "保存成功");
-                    } else {
-                        nwg::simple_message("提示", "保存失败");
-                    }
+            let db = Db::new();
+            if let Ok(num) = if model.id > 0 {
+                db.update(model.clone())
+            } else {
+                db.insert(model.clone())
+            } {
+                if num == 1 {
+                    nwg::simple_message("提示", "保存成功");
                 } else {
                     nwg::simple_message("提示", "保存失败");
                 }
+            } else {
+                nwg::simple_message("提示", "保存失败");
             }
 
             *self.model.borrow_mut() = Some(model);
@@ -1103,76 +1012,51 @@ impl SecurityApp {
     }
 
     fn load_data_view(&self) {
-        if let Ok(conn) = Connection::open("./water-resources.db") {
-            if let Ok(mut stmt) = conn.prepare("SELECT id, level, name, area, start, end, river_width, elevation, ratio, line, allow, safe, depth, channel_width, threshold, dredging, time FROM water_security") {
-                if let Ok(mut security_models) =
-                    stmt.query_and_then([], |row| -> rusqlite::Result<SecurityModel> {
-                        Ok(SecurityModel {
-                            id: row.get(0)?,
-                            level: row.get(1)?,
-                            name: row.get(2)?,
-                            area: row.get(3)?,
-                            start: row.get(4)?,
-                            end: row.get(5)?,
-                            river_width: row.get(6)?,
-                            elevation: row.get(7)?,
-                            ratio: row.get(8)?,
-                            line: row.get(9)?,
-                            allow: row.get(10)?,
-                            safe: row.get(11)?,
-                            depth: row.get(12)?,
-                            channel_width: row.get(13)?,
-                            threshold: row.get(14)?,
-                            dredging: row.get(15)?,
-                            time: row.get(16)?,
-                        })
-                    })
-                {
-                    let mut models = vec![];
-                    while let Some(Ok(model)) = security_models.next() {
-                        models.push(model.clone());
+        let db = Db::new();
+        if let Ok(security_models) = db.select::<SecurityModel>() {
+            let mut models = vec![];
+            for model in security_models {
+                models.push(model.clone());
 
-                        let data_view = &self.data_view;
+                let data_view = &self.data_view;
 
-                        data_view.insert_items_row(
-                            None,
-                            &[
-                                model.id.to_string(),
-                                String::from(match model.level {
-                                    1 => "第一级",
-                                    2 => "第二级",
-                                    3 => "第三级",
-                                    4 => "第四级",
-                                    5 => "第五级",
-                                    _ => "第一级",
-                                }),
-                                model.name,
-                                model.area,
-                                model.start,
-                                model.end,
-                                model.river_width.to_string(),
-                                model.elevation.to_string(),
-                                model.ratio.to_string(),
-                                model.line.to_string(),
-                                String::from(if model.allow == 0.8 {
-                                    "是"
-                                } else if model.allow == 0.4 {
-                                    "否"
-                                } else {
-                                    "自定义"
-                                }),
-                                model.safe.to_string(),
-                                model.depth.to_string(),
-                                model.channel_width.to_string(),
-                                model.threshold.to_string(),
-                                model.dredging,
-                                model.time.to_rfc3339_opts(SecondsFormat::Secs, true),
-                            ],
-                        );
-                    }
-                    *self.security_models.borrow_mut() = Some(models);
-                }
+                data_view.insert_items_row(
+                    None,
+                    &[
+                        model.id.to_string(),
+                        String::from(match model.level {
+                            1 => "第一级",
+                            2 => "第二级",
+                            3 => "第三级",
+                            4 => "第四级",
+                            5 => "第五级",
+                            _ => "第一级",
+                        }),
+                        model.name,
+                        model.area,
+                        model.start,
+                        model.end,
+                        model.river_width.to_string(),
+                        model.elevation.to_string(),
+                        model.ratio.to_string(),
+                        model.line.to_string(),
+                        String::from(if model.allow == 0.8 {
+                            "是"
+                        } else if model.allow == 0.4 {
+                            "否"
+                        } else {
+                            "自定义"
+                        }),
+                        model.safe.to_string(),
+                        model.depth.to_string(),
+                        model.channel_width.to_string(),
+                        model.threshold.to_string(),
+                        model.dredging,
+                        model.time.to_rfc3339_opts(SecondsFormat::Secs, true),
+                    ],
+                );
             }
+            *self.security_models.borrow_mut() = Some(models);
         }
     }
 
@@ -1344,101 +1228,54 @@ impl SecurityApp {
                     }
                 }
             }
-            if let Ok(conn) = Connection::open("./water-resources.db") {
-                let (mut insert_num, mut update_num, mut failed_num) = (0u32, 0u32, 0u32);
-                for mut model in models {
-                    if let Ok(id) = conn.query_row(
-                        "SELECT id FROM water_security WHERE name=?1 and area=?2",
-                        [model.name.clone(), model.area.clone()],
-                        |row| row.get(0),
-                    ) {
-                        model.id = id;
-                    } else {
-                        if model.id > 0 {
-                            match conn.query_row(
-                                "SELECT id FROM water_security WHERE id=?1",
-                                [model.id],
-                                |row| -> rusqlite::Result<u32> { row.get(0) },
-                            ) {
-                                Err(_) => model.id = 0,
-                                _ => {}
-                            }
+            let db = Db::new();
+            let (mut insert_num, mut update_num, mut failed_num) = (0u32, 0u32, 0u32);
+            for mut model in models {
+                if let Ok(id) = db.connection.query_row(
+                    "SELECT id FROM water_security WHERE name=?1 and area=?2",
+                    [model.name.clone(), model.area.clone()],
+                    |row| row.get(0),
+                ) {
+                    model.id = id;
+                } else {
+                    if model.id > 0 {
+                        match db.connection.query_row(
+                            "SELECT id FROM water_security WHERE id=?1",
+                            [model.id],
+                            |row| -> Result<u32> { row.get(0) },
+                        ) {
+                            Err(_) => model.id = 0,
+                            _ => {}
                         }
                     }
-                    if let Ok(num) = if model.id > 0 {
-                        conn.execute(
-                            r#"UPDATE water_security SET
-level=?1, name=?2, area=?3, start=?4, end=?5, river_width=?6, elevation=?7, ratio=?8, 
-line=?9, allow=?10, safe=?11, depth=?12, channel_width=?13, threshold=?14, dredging=?15, time=?16
-WHERE id=?17"#,
-                            params![
-                                model.level,
-                                model.name,
-                                model.area,
-                                model.start,
-                                model.end,
-                                model.river_width,
-                                model.elevation,
-                                model.ratio,
-                                model.line,
-                                model.allow,
-                                model.safe,
-                                model.depth,
-                                model.channel_width,
-                                model.threshold,
-                                model.dredging,
-                                model.time,
-                                model.id
-                            ],
-                        )
-                    } else {
-                        conn.execute(
-                    r#"INSERT INTO 
-water_security(level, name, area, start, end, river_width, elevation, ratio, line, allow, safe, depth, channel_width, threshold, dredging, time) 
-VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"#,
-                        params![
-                            model.level,
-                            model.name,
-                            model.area,
-                            model.start,
-                            model.end,
-                            model.river_width,
-                            model.elevation,
-                            model.ratio,
-                            model.line,
-                            model.allow,
-                            model.safe,
-                            model.depth,
-                            model.channel_width,
-                            model.threshold,
-                            model.dredging,
-                            model.time
-                        ],
-                    )
-                    } {
-                        if num == 1 {
-                            if model.id > 0 {
-                                update_num += 1;
-                            } else {
-                                insert_num += 1;
-                            }
+                }
+                if let Ok(num) = if model.id > 0 {
+                    db.update(model.clone())
+                } else {
+                    db.insert(model.clone())
+                } {
+                    if num == 1 {
+                        if model.id > 0 {
+                            update_num += 1;
                         } else {
-                            failed_num += 1;
+                            insert_num += 1;
                         }
                     } else {
                         failed_num += 1;
                     }
+                } else {
+                    failed_num += 1;
                 }
-                nwg::simple_message(
-                    "导入完成",
-                    format!(
-                        "导入完成，新增{}条，更新{}条，失败{}条",
-                        insert_num, update_num, failed_num
-                    )
-                    .as_str(),
-                );
-                self.reload_menu_selected();
             }
+            nwg::simple_message(
+                "导入完成",
+                format!(
+                    "导入完成，新增{}条，更新{}条，失败{}条",
+                    insert_num, update_num, failed_num
+                )
+                .as_str(),
+            );
+            self.reload_menu_selected();
         }
     }
 
@@ -1474,81 +1311,58 @@ VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"#,
                     sheet.add_column(Column { width: 30.0 });
                     sheet.add_column(Column { width: 30.0 });
 
-                    if let Ok(_) = workbook
-                        .write_sheet(&mut sheet, |sheet_writer| {
-                            sheet_writer.append_row(row![
-                                "编号",
-                                "河道防洪排涝等级",
-                                "河道名称",
-                                "河道所属辖区",
-                                "河道起点",
-                                "河道终点",
-                                "河道宽度(m)",
-                                "边坡比",
-                                "设计河底高程(m)",
-                                "设计洪水水位(m)",
-                                "是否允许浪爬高",
-                                "安全超高(m)",
-                                "淤积深度(m)",
-                                "河槽宽度(m)",
-                                "淤积阈值(m)",
-                                "清淤判断",
-                                "录入时间"
-                            ])?;
-                            if let Ok(conn) = Connection::open("./water-resources.db") {
-                                if let Ok(mut stmt) = conn.prepare(
-                                    "SELECT id, level, name, area, start, end, river_width, elevation, ratio, line, allow, safe, depth, channel_width, threshold, dredging, time FROM water_security"
-                                ) {
-                                    if let Ok(mut security_models) = stmt.query_and_then([], |row| -> rusqlite::Result<SecurityModel> {
-                                        Ok(SecurityModel {
-                                            id: row.get(0)?,
-                                            level: row.get(1)?,
-                                            name: row.get(2)?,
-                                            area: row.get(3)?,
-                                            start: row.get(4)?,
-                                            end: row.get(5)?,
-                                            river_width: row.get(6)?,
-                                            elevation: row.get(7)?,
-                                            ratio: row.get(8)?,
-                                            line: row.get(9)?,
-                                            allow: row.get(10)?,
-                                            safe: row.get(11)?,
-                                            depth: row.get(12)?,
-                                            channel_width: row.get(13)?,
-                                            threshold: row.get(14)?,
-                                            dredging: row.get(15)?,
-                                            time: row.get(16)?,
-                                        })
-                                    }) {
-                                        let mut row_num = 0usize;
-                                        while let Some(Ok(model)) = security_models.next() {
-                                            sheet_writer.append_row(row![
-                                                model.id.to_string(),
-                                                model.level.to_string(),
-                                                model.name,
-                                                model.area,
-                                                model.start,
-                                                model.end,
-                                                model.river_width.to_string(),
-                                                model.elevation.to_string(),
-                                                model.ratio.to_string(),
-                                                model.line.to_string(),
-                                                model.allow.to_string(),
-                                                model.safe.to_string(),
-                                                model.depth.to_string(),
-                                                model.channel_width.to_string(),
-                                                model.threshold.to_string(),
-                                                model.dredging,
-                                                model.time.to_rfc3339_opts(SecondsFormat::Secs, true)
-                                            ])?;
-                                            row_num += 1;
-                                        }
-                                        nwg::simple_message("导出", format!("导出完成，共{}条数据", row_num).as_str());
-                                    }
-                                }
+                    if let Ok(_) = workbook.write_sheet(&mut sheet, |sheet_writer| {
+                        sheet_writer.append_row(row![
+                            "编号",
+                            "河道防洪排涝等级",
+                            "河道名称",
+                            "河道所属辖区",
+                            "河道起点",
+                            "河道终点",
+                            "河道宽度(m)",
+                            "边坡比",
+                            "设计河底高程(m)",
+                            "设计洪水水位(m)",
+                            "是否允许浪爬高",
+                            "安全超高(m)",
+                            "淤积深度(m)",
+                            "河槽宽度(m)",
+                            "淤积阈值(m)",
+                            "清淤判断",
+                            "录入时间"
+                        ])?;
+                        let db = Db::new();
+                        if let Ok(security_models) = db.select::<SecurityModel>() {
+                            let mut row_num = 0usize;
+                            for model in security_models {
+                                sheet_writer.append_row(row![
+                                    model.id.to_string(),
+                                    model.level.to_string(),
+                                    model.name,
+                                    model.area,
+                                    model.start,
+                                    model.end,
+                                    model.river_width.to_string(),
+                                    model.elevation.to_string(),
+                                    model.ratio.to_string(),
+                                    model.line.to_string(),
+                                    model.allow.to_string(),
+                                    model.safe.to_string(),
+                                    model.depth.to_string(),
+                                    model.channel_width.to_string(),
+                                    model.threshold.to_string(),
+                                    model.dredging,
+                                    model.time.to_rfc3339_opts(SecondsFormat::Secs, true)
+                                ])?;
+                                row_num += 1;
                             }
-                            Ok(())
-                        }) {}
+                            nwg::simple_message(
+                                "导出",
+                                format!("导出完成，共{}条数据", row_num).as_str(),
+                            );
+                        }
+                        Ok(())
+                    }) {}
 
                     if let Ok(_) = workbook.close() {}
                 }
@@ -1626,20 +1440,17 @@ VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"#,
                         },
                     ) == nwg::MessageChoice::Ok
                     {
-                        let id = models[index].id;
+                        let model = models[index].clone();
 
-                        if let Ok(conn) = Connection::open("./water-resources.db") {
-                            if let Ok(num) =
-                                conn.execute("DELETE FROM water_security WHERE id=?", [id])
-                            {
-                                if num == 1 {
-                                    nwg::simple_message("提示", "删除成功");
-                                } else {
-                                    nwg::simple_message("提示", "删除失败");
-                                }
+                        let db = Db::new();
+                        if let Ok(num) = db.delete(model) {
+                            if num == 1 {
+                                nwg::simple_message("提示", "删除成功");
                             } else {
                                 nwg::simple_message("提示", "删除失败");
                             }
+                        } else {
+                            nwg::simple_message("提示", "删除失败");
                         }
                     }
 

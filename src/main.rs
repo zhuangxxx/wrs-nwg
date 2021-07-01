@@ -5,7 +5,9 @@ use std::{cell::RefCell, thread};
 use nwd::NwgUi;
 use nwg::NativeUi;
 
+pub mod db;
 mod security_app;
+pub mod security_model;
 
 #[derive(Default, NwgUi)]
 pub struct BasicApp {
