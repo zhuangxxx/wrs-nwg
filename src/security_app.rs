@@ -1,23 +1,23 @@
 use std::{
     cell::RefCell,
     ffi::OsString,
+    mem::size_of,
     thread::{self, JoinHandle},
 };
 
 use calamine::{Reader, Xlsx};
-use chrono::{DateTime, SecondsFormat, TimeZone, Utc};
+use chrono::{Local, SecondsFormat, TimeZone, Utc};
 use nwd::{NwgPartial, NwgUi};
 use nwg::NativeUi;
 use rusqlite::Result;
 use simple_excel_writer::{row, Column, Row, Workbook};
 
-use crate::{db::Db, security_model::SecurityModel};
+use crate::{db::DbConn, security_model::SecurityModel};
 
 enum SecurityFormError {
     InvalidInput(String, String),
 }
 
-// TODO 合并如SecurityFormWindow
 #[derive(Default, NwgPartial)]
 struct SecurityFormUi {
     #[nwg_layout(max_column: Some(6), max_row: Some(24))]
@@ -180,7 +180,7 @@ struct SecurityFormUi {
 
 #[derive(Default, NwgUi)]
 pub struct SecurityFormWindow {
-    model: RefCell<Option<SecurityModel>>,
+    db_conn: RefCell<Option<DbConn<SecurityModel>>>,
 
     #[nwg_control(size: (400, 800), center: true, title: "水安全", flags: "WINDOW | VISIBLE")]
     #[nwg_events(OnWindowClose: [Self::window_close], OnInit: [Self::init_window])]
@@ -210,16 +210,19 @@ pub struct SecurityFormWindow {
 }
 
 impl SecurityFormWindow {
-    // TODO 改为Db句柄
-    pub fn window_open(model: Option<SecurityModel>) -> thread::JoinHandle<SecurityModel> {
+    // TODO 改由BasicApp持有句柄，列表页与表单页共存
+    pub fn window_open(
+        conn: Option<DbConn<SecurityModel>>,
+    ) -> thread::JoinHandle<DbConn<SecurityModel>> {
         thread::spawn(move || {
-            let app = Self::build_ui(Default::default()).expect("Failed to build SecurityApp UI");
+            let app =
+                Self::build_ui(Default::default()).expect("Build SecurityFormWindow UI failed.");
 
-            *app.model.borrow_mut() = model;
+            *app.db_conn.borrow_mut() = conn;
 
             nwg::dispatch_thread_events();
 
-            app.model.take().unwrap_or(Default::default())
+            app.db_conn.take().unwrap()
         })
     }
 
@@ -266,8 +269,8 @@ impl SecurityFormWindow {
     }
 
     fn init_model(&self) {
-        let model = self.model.take();
-        if let Some(model) = model {
+        let mut conn = self.db_conn.take().unwrap();
+        if let Some(model) = conn.model.take() {
             if model.id > 0 {
                 self.security_form_ui
                     .id_input
@@ -376,11 +379,12 @@ impl SecurityFormWindow {
                     .as_str(),
             );
 
-            *self.model.borrow_mut() = Some(model);
+            *conn.model = Some(model);
         } else {
             self.reset_model();
-            *self.model.borrow_mut() = None;
         }
+
+        *self.db_conn.borrow_mut() = Some(conn);
     }
 
     fn init_window(&self) {
@@ -849,14 +853,14 @@ impl SecurityFormWindow {
         {
             self.calc_button_click();
 
-            let mut model = if let Some(model) = self.model.take() {
-                model
-            } else {
-                SecurityModel::default()
+            let mut conn = self.db_conn.take().unwrap();
+            let mut model = match conn.model.take() {
+                Some(model) => model,
+                None => SecurityModel::default(),
             };
 
-            if let Ok(id) = self.security_form_ui.id_input.text().parse() {
-                model.id = id;
+            if !self.security_form_ui.id_input.text().is_empty() {
+                model.id = self.security_form_ui.id_input.text().parse().unwrap();
             }
             model.level = self.security_form_ui.level_input.pos() as u32;
             model.name = self.security_form_ui.name_input.text();
@@ -893,24 +897,23 @@ impl SecurityFormWindow {
                 .parse()
                 .unwrap();
             model.dredging = self.security_form_ui.dredging_input.text().parse().unwrap();
-            model.time = Utc::now();
+            model.time = Local::now();
 
-            let db = Db::new();
-            if let Ok(num) = if model.id > 0 {
-                db.update(model.clone())
-            } else {
-                db.insert(model.clone())
-            } {
-                if num == 1 {
-                    nwg::simple_message("提示", "保存成功");
-                } else {
-                    nwg::simple_message("提示", "保存失败");
-                }
-            } else {
-                nwg::simple_message("提示", "保存失败");
-            }
+            let id = model.id;
+            *conn.model = Some(model);
+            match if id > 0 { conn.update() } else { conn.insert() } {
+                Ok(num) => nwg::simple_message(
+                    "提示",
+                    if num == 1 {
+                        "保存成功"
+                    } else {
+                        "保存失败"
+                    },
+                ),
+                Err(error) => nwg::simple_message("错误", error.to_string().as_str()),
+            };
 
-            *self.model.borrow_mut() = Some(model);
+            *self.db_conn.borrow_mut() = Some(conn);
 
             self.window.close();
         }
@@ -927,9 +930,8 @@ impl SecurityFormWindow {
 
 #[derive(Default, NwgUi)]
 pub struct SecurityApp {
-    // TODO RefCell指针改为Box指针
-    security_models: RefCell<Option<Vec<SecurityModel>>>,
-    security_window_handle: RefCell<Option<JoinHandle<SecurityModel>>>,
+    db_conn: RefCell<Option<DbConn<SecurityModel>>>,
+    security_window_handle: RefCell<Option<JoinHandle<DbConn<SecurityModel>>>>,
 
     #[nwg_control(size: (900, 600), center: true, title: "水安全", flags: "MAIN_WINDOW | VISIBLE")]
     #[nwg_events(OnWindowClose: [Self::window_close], OnInit: [Self::init_data_view])]
@@ -976,7 +978,10 @@ pub struct SecurityApp {
 impl SecurityApp {
     pub fn window_open() -> thread::JoinHandle<()> {
         thread::spawn(move || {
-            let _app = Self::build_ui(Default::default()).expect("Failed to build SecurityApp UI");
+            let app = Self::build_ui(Default::default()).expect("Build SecurityApp UI failed.");
+
+            *app.db_conn.borrow_mut() = Some(DbConn::new());
+
             nwg::dispatch_thread_events();
         })
     }
@@ -1012,14 +1017,10 @@ impl SecurityApp {
     }
 
     fn load_data_view(&self) {
-        let db = Db::new();
-        if let Ok(security_models) = db.select::<SecurityModel>() {
-            let mut models = vec![];
-            for model in security_models {
-                models.push(model.clone());
-
+        let mut conn = self.db_conn.take().unwrap();
+        if let Ok(models) = conn.select() {
+            for model in models {
                 let data_view = &self.data_view;
-
                 data_view.insert_items_row(
                     None,
                     &[
@@ -1056,8 +1057,9 @@ impl SecurityApp {
                     ],
                 );
             }
-            *self.security_models.borrow_mut() = Some(models);
         }
+
+        *self.db_conn.borrow_mut() = Some(conn);
     }
 
     // TODO 分文件类型导入
@@ -1195,25 +1197,13 @@ impl SecurityApp {
                                             }
                                             "time" => {
                                                 if let Some(time) = cell.get_string() {
-                                                    if time.contains("+") || time.contains("Z") {
-                                                        if let Ok(time) =
-                                                            DateTime::parse_from_rfc3339(time)
-                                                        {
-                                                            model.time = Utc.from_utc_datetime(
-                                                                &time.naive_utc(),
-                                                            );
-                                                        } else {
-                                                            model.time = Utc::now();
-                                                        }
-                                                    } else {
-                                                        model.time = match Utc.datetime_from_str(
-                                                            time,
-                                                            "%Y-%m-%d %H:%M:%S",
-                                                        ) {
-                                                            Ok(time) => time,
-                                                            _ => Utc::now(),
-                                                        };
-                                                    }
+                                                    model.time = match Local.datetime_from_str(
+                                                        time,
+                                                        "%Y-%m-%d %H:%M:%S",
+                                                    ) {
+                                                        Ok(time) => time,
+                                                        _ => Local::now(),
+                                                    };
                                                 }
                                             }
                                             _ => {}
@@ -1228,18 +1218,18 @@ impl SecurityApp {
                     }
                 }
             }
-            let db = Db::new();
+            let mut conn = self.db_conn.take().unwrap();
             let (mut insert_num, mut update_num, mut failed_num) = (0u32, 0u32, 0u32);
             for mut model in models {
-                if let Ok(id) = db.connection.query_row(
+                if let Ok(id) = conn.instance.query_row(
                     "SELECT id FROM water_security WHERE name=?1 and area=?2",
-                    [model.name.clone(), model.area.clone()],
+                    [model.name.as_str(), model.area.as_str()],
                     |row| row.get(0),
                 ) {
                     model.id = id;
                 } else {
                     if model.id > 0 {
-                        match db.connection.query_row(
+                        match conn.instance.query_row(
                             "SELECT id FROM water_security WHERE id=?1",
                             [model.id],
                             |row| -> Result<u32> { row.get(0) },
@@ -1249,13 +1239,11 @@ impl SecurityApp {
                         }
                     }
                 }
-                if let Ok(num) = if model.id > 0 {
-                    db.update(model.clone())
-                } else {
-                    db.insert(model.clone())
-                } {
+                let id = model.id;
+                *conn.model = Some(model);
+                if let Ok(num) = if id > 0 { conn.update() } else { conn.insert() } {
                     if num == 1 {
-                        if model.id > 0 {
+                        if id > 0 {
                             update_num += 1;
                         } else {
                             insert_num += 1;
@@ -1267,6 +1255,9 @@ impl SecurityApp {
                     failed_num += 1;
                 }
             }
+
+            *self.db_conn.borrow_mut() = Some(conn);
+
             nwg::simple_message(
                 "导入完成",
                 format!(
@@ -1275,6 +1266,7 @@ impl SecurityApp {
                 )
                 .as_str(),
             );
+
             self.reload_menu_selected();
         }
     }
@@ -1331,8 +1323,8 @@ impl SecurityApp {
                             "清淤判断",
                             "录入时间"
                         ])?;
-                        let db = Db::new();
-                        if let Ok(security_models) = db.select::<SecurityModel>() {
+                        let mut conn = self.db_conn.take().unwrap();
+                        if let Ok(security_models) = conn.select() {
                             let mut row_num = 0usize;
                             for model in security_models {
                                 sheet_writer.append_row(row![
@@ -1361,6 +1353,9 @@ impl SecurityApp {
                                 format!("导出完成，共{}条数据", row_num).as_str(),
                             );
                         }
+
+                        *self.db_conn.borrow_mut() = Some(conn);
+
                         Ok(())
                     }) {}
 
@@ -1371,21 +1366,20 @@ impl SecurityApp {
     }
 
     fn create_menu_open(&self) {
-        *self.security_window_handle.borrow_mut() = Some(SecurityFormWindow::window_open(None));
+        let conn = self.db_conn.take();
+        *self.security_window_handle.borrow_mut() = Some(SecurityFormWindow::window_open(conn));
 
         self.window.set_visible(false);
 
-        if let Some(mut models) = self.security_models.take() {
-            let handle = self.security_window_handle.borrow_mut().take();
-            if let Some(handle) = handle {
-                if let Ok(model) = handle.join() {
-                    models.push(model);
-                    *self.security_models.borrow_mut() = Some(models);
+        let handle = self.security_window_handle.take();
+        if let Some(handle) = handle {
+            if let Ok(conn) = handle.join() {
+                *self.db_conn.borrow_mut() = Some(conn);
+                *self.security_window_handle.borrow_mut() = None;
 
-                    self.reload_menu_selected();
+                self.reload_menu_selected();
 
-                    self.window.set_visible(true);
-                }
+                self.window.set_visible(true);
             }
         }
     }
@@ -1402,25 +1396,28 @@ impl SecurityApp {
 
     fn update_menu_selected(&self) {
         if let Some(index) = self.data_view.selected_item() {
-            if let Some(mut models) = self.security_models.take() {
-                if index < models.len() {
-                    let model = models[index].clone();
+            if let Some(item) = self.data_view.item(index, 0, size_of::<u32>()) {
+                let mut conn = self.db_conn.take().unwrap();
+                if let Ok(model) = conn.find_by_id(item.text.parse().unwrap()) {
+                    *conn.model = Some(model);
                     *self.security_window_handle.borrow_mut() =
-                        Some(SecurityFormWindow::window_open(Some(model)));
+                        Some(SecurityFormWindow::window_open(Some(conn)));
 
                     self.window.set_visible(false);
 
-                    let handle = self.security_window_handle.borrow_mut().take();
+                    let handle = self.security_window_handle.take();
                     if let Some(handle) = handle {
-                        if let Ok(model) = handle.join() {
-                            models[index] = model;
-                            *self.security_models.borrow_mut() = Some(models);
+                        if let Ok(conn) = handle.join() {
+                            *self.db_conn.borrow_mut() = Some(conn);
+                            *self.security_window_handle.borrow_mut() = None;
 
                             self.reload_menu_selected();
 
                             self.window.set_visible(true);
                         }
                     }
+                } else {
+                    *self.db_conn.borrow_mut() = Some(conn);
                 }
             }
         }
@@ -1428,8 +1425,8 @@ impl SecurityApp {
 
     fn delete_menu_selected(&self) {
         if let Some(index) = self.data_view.selected_item() {
-            if let Some(models) = self.security_models.take() {
-                if index < models.len() {
+            if let Some(item) = self.data_view.item(index, 0, size_of::<u32>()) {
+                if !item.text.is_empty() {
                     if nwg::modal_message(
                         &self.window,
                         &nwg::MessageParams {
@@ -1440,23 +1437,28 @@ impl SecurityApp {
                         },
                     ) == nwg::MessageChoice::Ok
                     {
-                        let model = models[index].clone();
-
-                        let db = Db::new();
-                        if let Ok(num) = db.delete(model) {
-                            if num == 1 {
-                                nwg::simple_message("提示", "删除成功");
-                            } else {
-                                nwg::simple_message("提示", "删除失败");
-                            }
-                        } else {
-                            nwg::simple_message("提示", "删除失败");
+                        let mut conn = self.db_conn.take().unwrap();
+                        if let Ok(model) = conn.find_by_id(item.text.parse().unwrap()) {
+                            *conn.model = Some(model);
+                            match conn.delete() {
+                                Ok(num) => nwg::simple_message(
+                                    "提示",
+                                    if num == 1 {
+                                        "删除成功"
+                                    } else {
+                                        "删除失败"
+                                    },
+                                ),
+                                Err(error) => {
+                                    nwg::simple_message("错误", error.to_string().as_str())
+                                }
+                            };
                         }
+
+                        *self.db_conn.borrow_mut() = Some(conn);
+
+                        self.reload_menu_selected();
                     }
-
-                    *self.security_models.borrow_mut() = Some(models);
-
-                    self.reload_menu_selected();
                 }
             }
         }

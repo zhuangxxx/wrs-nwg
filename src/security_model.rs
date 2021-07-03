@@ -1,9 +1,9 @@
-use chrono::{DateTime, SecondsFormat, Utc};
-use rusqlite::{params_from_iter, ParamsFromIter, Result};
+use chrono::{DateTime, Local};
+use rusqlite::{named_params, Result, Row, Statement};
 
-use crate::db::{DbStatement, Model};
+use crate::db::{DbOpt, Model, ModelNameType};
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SecurityModel {
     pub id: u32,
     pub level: u32,
@@ -21,7 +21,7 @@ pub struct SecurityModel {
     pub channel_width: f32,
     pub threshold: f32,
     pub dredging: String,
-    pub time: DateTime<Utc>,
+    pub time: DateTime<Local>,
 }
 
 impl Default for SecurityModel {
@@ -43,14 +43,87 @@ impl Default for SecurityModel {
             channel_width: Default::default(),
             threshold: Default::default(),
             dredging: Default::default(),
-            time: Utc::now(),
+            time: Local::now(),
         }
     }
 }
 
-impl<'a> Model<'a> for SecurityModel {
-    fn from_row(row: &rusqlite::Row<'_>) -> Result<Self> {
-        Ok(SecurityModel {
+impl Model for SecurityModel {
+    fn get_sql(opt: DbOpt) -> String {
+        match opt {
+            DbOpt::Create => r#"CREATE TABLE water_security
+                (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    level         INTEGER,
+                    name          TEXT,
+                    area          TEXT,
+                    start         TEXT,
+                    end           TEXT,
+                    river_width   REAL,
+                    elevation     REAL,
+                    ratio         REAL,
+                    line          REAL,
+                    allow         REAL,
+                    safe          REAL,
+                    depth         REAL,
+                    channel_width REAL,
+                    threshold     REAL,
+                    dredging      TEXT,
+                    time          TEXT
+                )"#
+            .to_string(),
+            DbOpt::Insert => r#"INSERT INTO water_security(
+                    level, name, area, start, end, river_width, elevation, ratio,
+                    line, allow, safe, depth, channel_width, threshold, dredging, time
+                )
+                VALUES(
+                    :level, :name, :area, :start, :end, :river_width, :elevation, :ratio,
+                    :line, :allow, :safe, :depth, :channel_width, :threshold, :dredging, :time
+                )"#
+            .to_string(),
+            DbOpt::Update => r#"UPDATE water_security SET
+                    level=:level, name=:name, area=:area, start=:start, end=:end,
+                    river_width=:river_width, elevation=:elevation, ratio=:ratio,
+                    line=:line, allow=:allow, safe=:safe, depth=:depth, channel_width=:channel_width,
+                    threshold=:threshold, dredging=:dredging, time=:time
+                WHERE id=:id"#
+                .to_string(),
+            DbOpt::Delete => r#"DELETE FROM water_security WHERE id=?"#.to_string(),
+            DbOpt::Select => r#"SELECT
+                id, level, name, area, start, end, river_width, elevation, ratio,
+                line, allow, safe, depth, channel_width, threshold, dredging, time
+                FROM water_security"#
+                .to_string(),
+        }
+    }
+
+    fn get_names(name_type: ModelNameType) -> Vec<String> {
+        match name_type {
+            ModelNameType::Column => vec![
+                String::from("id"),
+                String::from("level"),
+                String::from("name"),
+                String::from("area"),
+                String::from("start"),
+                String::from("end"),
+                String::from("river_width"),
+                String::from("elevation"),
+                String::from("ratio"),
+                String::from("line"),
+                String::from("allow"),
+                String::from("safe"),
+                String::from("depth"),
+                String::from("channel_width"),
+                String::from("threshold"),
+                String::from("dredging"),
+                String::from("time"),
+            ],
+            ModelNameType::Header => todo!(),
+        }
+    }
+
+    fn from_row(row: &Row) -> Result<Self> {
+        Ok(Self {
             id: row.get("id")?,
             level: row.get("level")?,
             name: row.get("name")?,
@@ -71,99 +144,48 @@ impl<'a> Model<'a> for SecurityModel {
         })
     }
 
-    fn get_sql(db_stmt: DbStatement) -> &'a str {
-        match db_stmt {
-            DbStatement::Create => {
-                r#"CREATE TABLE water_security
-                (
-                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                    level         INTEGER,
-                    name          TEXT,
-                    area          TEXT,
-                    start         TEXT,
-                    end           TEXT,
-                    river_width   REAL,
-                    elevation     REAL,
-                    ratio         REAL,
-                    line          REAL,
-                    allow         REAL,
-                    safe          REAL,
-                    depth         REAL,
-                    channel_width REAL,
-                    threshold     REAL,
-                    dredging      TEXT,
-                    time          TEXT
-                )"#
-            }
-            DbStatement::Insert => {
-                r#"INSERT INTO water_security(
-                    level, name, area, start, end, river_width, elevation, ratio, 
-                    line, allow, safe, depth, channel_width, threshold, dredging, time
-                ) 
-                VALUES(
-                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16
-                )"#
-            }
-            DbStatement::Update => {
-                r#"UPDATE water_security SET
-                level=?1, name=?2, area=?3, start=?4, end=?5, river_width=?6, elevation=?7, ratio=?8, 
-                line=?9, allow=?10, safe=?11, depth=?12, channel_width=?13, threshold=?14, dredging=?15, time=?16
-                WHERE id=?17"#
-            }
-            DbStatement::Delete => r#"DELETE FROM water_security WHERE id=?"#,
-            DbStatement::Select => {
-                r#"SELECT 
-                id, level, name, area, start, end, river_width, elevation, ratio, 
-                line, allow, safe, depth, channel_width, threshold, dredging, time 
-                FROM water_security"#
-            }
-        }
-    }
-
-    // TODO 参数绑定对应类型
-    fn get_params(&self, db_stmt: DbStatement) -> ParamsFromIter<Vec<String>> {
-        let model = self.clone();
-        match db_stmt {
-            DbStatement::Create => params_from_iter(vec![]),
-            DbStatement::Insert => params_from_iter(vec![
-                model.level.to_string(),
-                model.name,
-                model.area,
-                model.start,
-                model.end,
-                model.river_width.to_string(),
-                model.elevation.to_string(),
-                model.ratio.to_string(),
-                model.line.to_string(),
-                model.allow.to_string(),
-                model.safe.to_string(),
-                model.depth.to_string(),
-                model.channel_width.to_string(),
-                model.threshold.to_string(),
-                model.dredging,
-                model.time.to_rfc3339_opts(SecondsFormat::Secs, true),
-            ]),
-            DbStatement::Update => params_from_iter(vec![
-                model.level.to_string(),
-                model.name,
-                model.area,
-                model.start,
-                model.end,
-                model.river_width.to_string(),
-                model.elevation.to_string(),
-                model.ratio.to_string(),
-                model.line.to_string(),
-                model.allow.to_string(),
-                model.safe.to_string(),
-                model.depth.to_string(),
-                model.channel_width.to_string(),
-                model.threshold.to_string(),
-                model.dredging,
-                model.time.to_rfc3339_opts(SecondsFormat::Secs, true),
-                model.id.to_string(),
-            ]),
-            DbStatement::Delete => params_from_iter(vec![model.id.to_string()]),
-            DbStatement::Select => params_from_iter(vec![]),
+    fn execute(&self, stmt: &mut Statement, opt: DbOpt) -> Result<usize> {
+        match opt {
+            DbOpt::Create => unimplemented!(),
+            DbOpt::Insert => stmt.execute(named_params! {
+                ":level": self.level,
+                ":name": self.name,
+                ":area": self.area,
+                ":start": self.start,
+                ":end": self.end,
+                ":river_width": self.river_width,
+                ":ratio": self.ratio,
+                ":elevation": self.elevation,
+                ":line": self.line,
+                ":allow": self.allow,
+                ":safe": self.safe,
+                ":depth": self.depth,
+                ":channel_width": self.channel_width,
+                ":threshold": self.threshold,
+                ":dredging": self.dredging,
+                ":time": self.time,
+            }),
+            DbOpt::Update => stmt.execute(named_params! {
+                ":level": self.level,
+                ":name": self.name,
+                ":area": self.area,
+                ":start": self.start,
+                ":end": self.end,
+                ":river_width": self.river_width,
+                ":ratio": self.ratio,
+                ":elevation": self.elevation,
+                ":line": self.line,
+                ":allow": self.allow,
+                ":safe": self.safe,
+                ":depth": self.depth,
+                ":channel_width": self.channel_width,
+                ":threshold": self.threshold,
+                ":dredging": self.dredging,
+                ":time": self.time,
+                ":id": self.id,
+            }),
+            DbOpt::Delete => stmt.execute([self.id]),
+            DbOpt::Select => unimplemented!(),
         }
     }
 }
