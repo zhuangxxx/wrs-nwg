@@ -24,6 +24,9 @@ impl<T: Model> DbConn<T> {
             model: Box::new(None),
         }
     }
+    pub fn set(&mut self, model: T) {
+        *self.model = Some(model);
+    }
     pub fn prepare(&self, sql: &str) -> Result<Statement<'_>> {
         self.instance.prepare(sql)
     }
@@ -103,7 +106,6 @@ pub enum ModelNameType {
 }
 
 pub trait Model<T = Self> {
-    // TODO 使用HeaderType代替手动设置
     fn get_names(name_type: ModelNameType) -> Vec<String>;
     fn get_sql(opt: DbOpt) -> String;
     fn get_sql_with_condition(condition: &str, order: (&str, &str), limit: (u32, u32)) -> String {

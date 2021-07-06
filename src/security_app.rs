@@ -6,13 +6,16 @@ use std::{
 };
 
 use calamine::{Reader, Xlsx};
-use chrono::{Local, SecondsFormat, TimeZone, Utc};
+use chrono::{Local, TimeZone};
 use nwd::{NwgPartial, NwgUi};
 use nwg::NativeUi;
 use rusqlite::Result;
 use simple_excel_writer::{row, Column, Row, Workbook};
 
-use crate::{db::DbConn, security_model::SecurityModel};
+use crate::{
+    db::{DbConn, Model, ModelNameType},
+    security_model::SecurityModel,
+};
 
 enum SecurityFormError {
     InvalidInput(String, String),
@@ -210,9 +213,9 @@ pub struct SecurityFormWindow {
 }
 
 impl SecurityFormWindow {
-    // TODO 改由BasicApp持有句柄，列表页与表单页共存
     pub fn window_open(
         conn: Option<DbConn<SecurityModel>>,
+        sender: nwg::NoticeSender,
     ) -> thread::JoinHandle<DbConn<SecurityModel>> {
         thread::spawn(move || {
             let app =
@@ -221,6 +224,8 @@ impl SecurityFormWindow {
             *app.db_conn.borrow_mut() = conn;
 
             nwg::dispatch_thread_events();
+
+            sender.notice();
 
             app.db_conn.take().unwrap()
         })
@@ -261,11 +266,9 @@ impl SecurityFormWindow {
         self.security_form_ui.channel_width_input.set_text("");
         self.security_form_ui.threshold_input.set_text("");
         self.security_form_ui.dredging_input.set_text("");
-        self.security_form_ui.time_input.set_text(
-            Utc::now()
-                .to_rfc3339_opts(SecondsFormat::Secs, true)
-                .as_str(),
-        );
+        self.security_form_ui
+            .time_input
+            .set_text(format!("{}", Local::now().format("%Y-%m-%d %H:%M:%S")).as_str());
     }
 
     fn init_model(&self) {
@@ -372,14 +375,11 @@ impl SecurityFormWindow {
                 .dredging_input
                 .set_text(model.dredging.as_str());
 
-            self.security_form_ui.time_input.set_text(
-                model
-                    .time
-                    .to_rfc3339_opts(SecondsFormat::Secs, true)
-                    .as_str(),
-            );
+            self.security_form_ui
+                .time_input
+                .set_text(format!("{}", model.time.format("%Y-%m-%d %H:%M:%S")).as_str());
 
-            *conn.model = Some(model);
+            conn.set(model);
         } else {
             self.reset_model();
         }
@@ -400,11 +400,9 @@ impl SecurityFormWindow {
         }
 
         self.security_form_ui.ratio_input.set_visible(false);
-        self.security_form_ui.time_input.set_text(
-            Utc::now()
-                .to_rfc3339_opts(SecondsFormat::Secs, true)
-                .as_str(),
-        );
+        self.security_form_ui
+            .time_input
+            .set_text(format!("{}", Local::now().format("%Y-%m-%d %H:%M:%S")).as_str());
 
         self.init_model();
     }
@@ -851,71 +849,90 @@ impl SecurityFormWindow {
             },
         ) == nwg::MessageChoice::Ok
         {
-            self.calc_button_click();
+            if let Err(error) = self.exec_calc() {
+                match error {
+                    SecurityFormError::InvalidInput(message, input) => {
+                        nwg::simple_message("无效输入", message.as_str());
+                        match input.as_str() {
+                            "name" => self.security_form_ui.name_input.set_focus(),
+                            "area" => self.security_form_ui.area_input.set_focus(),
+                            "start" => self.security_form_ui.start_input.set_focus(),
+                            "end" => self.security_form_ui.end_input.set_focus(),
+                            "river_width" => self.security_form_ui.river_width_input.set_focus(),
+                            "ratio" => self.security_form_ui.ratio_input.set_focus(),
+                            "elevation" => self.security_form_ui.elevation_input.set_focus(),
+                            "line" => self.security_form_ui.line_input.set_focus(),
+                            "safe" => self.security_form_ui.safe_input.set_focus(),
+                            "depth" => self.security_form_ui.depth_input.set_focus(),
+                            _ => {}
+                        }
+                    }
+                }
+            } else {
+                let mut conn = self.db_conn.take().unwrap();
+                let mut model = match conn.model.take() {
+                    Some(model) => model,
+                    None => SecurityModel::default(),
+                };
 
-            let mut conn = self.db_conn.take().unwrap();
-            let mut model = match conn.model.take() {
-                Some(model) => model,
-                None => SecurityModel::default(),
-            };
+                if !self.security_form_ui.id_input.text().is_empty() {
+                    model.id = self.security_form_ui.id_input.text().parse().unwrap();
+                }
+                model.level = self.security_form_ui.level_input.pos() as u32;
+                model.name = self.security_form_ui.name_input.text();
+                model.area = self.security_form_ui.area_input.text();
+                model.start = self.security_form_ui.start_input.text();
+                model.end = self.security_form_ui.end_input.text();
+                model.river_width = self
+                    .security_form_ui
+                    .river_width_input
+                    .text()
+                    .parse()
+                    .unwrap();
+                model.ratio = self.security_form_ui.ratio_input.text().parse().unwrap();
+                model.elevation = self
+                    .security_form_ui
+                    .elevation_input
+                    .text()
+                    .parse()
+                    .unwrap();
+                model.line = self.security_form_ui.line_input.text().parse().unwrap();
+                model.allow = self.security_form_ui.safe_input.text().parse().unwrap();
+                model.safe = self.security_form_ui.safe_input.text().parse().unwrap();
+                model.depth = self.security_form_ui.depth_input.text().parse().unwrap();
+                model.channel_width = self
+                    .security_form_ui
+                    .channel_width_input
+                    .text()
+                    .parse()
+                    .unwrap();
+                model.threshold = self
+                    .security_form_ui
+                    .threshold_input
+                    .text()
+                    .parse()
+                    .unwrap();
+                model.dredging = self.security_form_ui.dredging_input.text().parse().unwrap();
+                model.time = Local::now();
 
-            if !self.security_form_ui.id_input.text().is_empty() {
-                model.id = self.security_form_ui.id_input.text().parse().unwrap();
+                let id = model.id;
+                conn.set(model);
+                match if id > 0 { conn.update() } else { conn.insert() } {
+                    Ok(num) => nwg::simple_message(
+                        "提示",
+                        if num == 1 {
+                            "保存成功"
+                        } else {
+                            "保存失败"
+                        },
+                    ),
+                    Err(error) => nwg::simple_message("错误", error.to_string().as_str()),
+                };
+
+                *self.db_conn.borrow_mut() = Some(conn);
+
+                self.window.close();
             }
-            model.level = self.security_form_ui.level_input.pos() as u32;
-            model.name = self.security_form_ui.name_input.text();
-            model.area = self.security_form_ui.area_input.text();
-            model.start = self.security_form_ui.start_input.text();
-            model.end = self.security_form_ui.end_input.text();
-            model.river_width = self
-                .security_form_ui
-                .river_width_input
-                .text()
-                .parse()
-                .unwrap();
-            model.ratio = self.security_form_ui.ratio_input.text().parse().unwrap();
-            model.elevation = self
-                .security_form_ui
-                .elevation_input
-                .text()
-                .parse()
-                .unwrap();
-            model.line = self.security_form_ui.line_input.text().parse().unwrap();
-            model.allow = self.security_form_ui.safe_input.text().parse().unwrap();
-            model.safe = self.security_form_ui.safe_input.text().parse().unwrap();
-            model.depth = self.security_form_ui.depth_input.text().parse().unwrap();
-            model.channel_width = self
-                .security_form_ui
-                .channel_width_input
-                .text()
-                .parse()
-                .unwrap();
-            model.threshold = self
-                .security_form_ui
-                .threshold_input
-                .text()
-                .parse()
-                .unwrap();
-            model.dredging = self.security_form_ui.dredging_input.text().parse().unwrap();
-            model.time = Local::now();
-
-            let id = model.id;
-            *conn.model = Some(model);
-            match if id > 0 { conn.update() } else { conn.insert() } {
-                Ok(num) => nwg::simple_message(
-                    "提示",
-                    if num == 1 {
-                        "保存成功"
-                    } else {
-                        "保存失败"
-                    },
-                ),
-                Err(error) => nwg::simple_message("错误", error.to_string().as_str()),
-            };
-
-            *self.db_conn.borrow_mut() = Some(conn);
-
-            self.window.close();
         }
     }
 
@@ -936,6 +953,10 @@ pub struct SecurityApp {
     #[nwg_control(size: (900, 600), center: true, title: "水安全", flags: "MAIN_WINDOW | VISIBLE")]
     #[nwg_events(OnWindowClose: [Self::window_close], OnInit: [Self::init_data_view])]
     window: nwg::Window,
+
+    #[nwg_control]
+    #[nwg_events(OnNotice: [Self::security_form_notice])]
+    security_form_notice: nwg::Notice,
 
     #[nwg_control(text: "导入")]
     #[nwg_events(OnMenuOpen: [Self::import_menu_open])]
@@ -993,23 +1014,9 @@ impl SecurityApp {
     fn init_data_view(&self) {
         let data_view = &self.data_view;
 
-        data_view.insert_column("编号");
-        data_view.insert_column("河道防洪排涝等级");
-        data_view.insert_column("河道名称");
-        data_view.insert_column("河道所属辖区");
-        data_view.insert_column("河道起点");
-        data_view.insert_column("河道终点");
-        data_view.insert_column("河道宽度(m)");
-        data_view.insert_column("边坡比");
-        data_view.insert_column("设计河底高程(m)");
-        data_view.insert_column("设计洪水水位(m)");
-        data_view.insert_column("是否允许浪爬高");
-        data_view.insert_column("安全超高(m)");
-        data_view.insert_column("淤积深度(m)");
-        data_view.insert_column("河槽宽度(m)");
-        data_view.insert_column("淤积阈值(m)");
-        data_view.insert_column("清淤判断");
-        data_view.insert_column("录入时间");
+        for header in SecurityModel::get_names(ModelNameType::Header) {
+            data_view.insert_column(header);
+        }
 
         data_view.set_headers_enabled(true);
 
@@ -1053,13 +1060,27 @@ impl SecurityApp {
                         model.channel_width.to_string(),
                         model.threshold.to_string(),
                         model.dredging,
-                        model.time.to_rfc3339_opts(SecondsFormat::Secs, true),
+                        format!("{}", model.time.format("%Y-%m-%d %H:%M:%S")),
                     ],
                 );
             }
         }
 
         *self.db_conn.borrow_mut() = Some(conn);
+    }
+
+    fn security_form_notice(&self) {
+        let handle = self.security_window_handle.take();
+        if let Some(handle) = handle {
+            if let Ok(mut conn) = handle.join() {
+                *conn.model = None;
+
+                *self.db_conn.borrow_mut() = Some(conn);
+                *self.security_window_handle.borrow_mut() = None;
+
+                self.reload_menu_selected();
+            }
+        }
     }
 
     // TODO 分文件类型导入
@@ -1216,58 +1237,58 @@ impl SecurityApp {
                             }
                         }
                     }
-                }
-            }
-            let mut conn = self.db_conn.take().unwrap();
-            let (mut insert_num, mut update_num, mut failed_num) = (0u32, 0u32, 0u32);
-            for mut model in models {
-                if let Ok(id) = conn.instance.query_row(
-                    "SELECT id FROM water_security WHERE name=?1 and area=?2",
-                    [model.name.as_str(), model.area.as_str()],
-                    |row| row.get(0),
-                ) {
-                    model.id = id;
-                } else {
-                    if model.id > 0 {
-                        match conn.instance.query_row(
-                            "SELECT id FROM water_security WHERE id=?1",
-                            [model.id],
-                            |row| -> Result<u32> { row.get(0) },
+                    let mut conn = self.db_conn.take().unwrap();
+                    let (mut insert_num, mut update_num, mut failed_num) = (0u32, 0u32, 0u32);
+                    for mut model in models {
+                        if let Ok(id) = conn.instance.query_row(
+                            "SELECT id FROM water_security WHERE name=?1 and area=?2",
+                            [model.name.as_str(), model.area.as_str()],
+                            |row| row.get(0),
                         ) {
-                            Err(_) => model.id = 0,
-                            _ => {}
-                        }
-                    }
-                }
-                let id = model.id;
-                *conn.model = Some(model);
-                if let Ok(num) = if id > 0 { conn.update() } else { conn.insert() } {
-                    if num == 1 {
-                        if id > 0 {
-                            update_num += 1;
+                            model.id = id;
                         } else {
-                            insert_num += 1;
+                            if model.id > 0 {
+                                match conn.instance.query_row(
+                                    "SELECT id FROM water_security WHERE id=?1",
+                                    [model.id],
+                                    |row| -> Result<u32> { row.get(0) },
+                                ) {
+                                    Err(_) => model.id = 0,
+                                    _ => {}
+                                }
+                            }
                         }
-                    } else {
-                        failed_num += 1;
+                        let id = model.id;
+                        conn.set(model);
+                        if let Ok(num) = if id > 0 { conn.update() } else { conn.insert() } {
+                            if num == 1 {
+                                if id > 0 {
+                                    update_num += 1;
+                                } else {
+                                    insert_num += 1;
+                                }
+                            } else {
+                                failed_num += 1;
+                            }
+                        } else {
+                            failed_num += 1;
+                        }
                     }
-                } else {
-                    failed_num += 1;
+
+                    *self.db_conn.borrow_mut() = Some(conn);
+
+                    nwg::simple_message(
+                        "导入完成",
+                        format!(
+                            "导入完成，新增{}条，更新{}条，失败{}条",
+                            insert_num, update_num, failed_num
+                        )
+                        .as_str(),
+                    );
+
+                    self.reload_menu_selected();
                 }
             }
-
-            *self.db_conn.borrow_mut() = Some(conn);
-
-            nwg::simple_message(
-                "导入完成",
-                format!(
-                    "导入完成，新增{}条，更新{}条，失败{}条",
-                    insert_num, update_num, failed_num
-                )
-                .as_str(),
-            );
-
-            self.reload_menu_selected();
         }
     }
 
@@ -1344,7 +1365,7 @@ impl SecurityApp {
                                     model.channel_width.to_string(),
                                     model.threshold.to_string(),
                                     model.dredging,
-                                    model.time.to_rfc3339_opts(SecondsFormat::Secs, true)
+                                    format!("{}", model.time.format("%Y-%m-%d %H:%M:%S"))
                                 ])?;
                                 row_num += 1;
                             }
@@ -1367,21 +1388,10 @@ impl SecurityApp {
 
     fn create_menu_open(&self) {
         let conn = self.db_conn.take();
-        *self.security_window_handle.borrow_mut() = Some(SecurityFormWindow::window_open(conn));
-
-        self.window.set_visible(false);
-
-        let handle = self.security_window_handle.take();
-        if let Some(handle) = handle {
-            if let Ok(conn) = handle.join() {
-                *self.db_conn.borrow_mut() = Some(conn);
-                *self.security_window_handle.borrow_mut() = None;
-
-                self.reload_menu_selected();
-
-                self.window.set_visible(true);
-            }
-        }
+        *self.security_window_handle.borrow_mut() = Some(SecurityFormWindow::window_open(
+            conn,
+            self.security_form_notice.sender(),
+        ));
     }
 
     fn right_click_menu_popup(&self) {
@@ -1399,26 +1409,12 @@ impl SecurityApp {
             if let Some(item) = self.data_view.item(index, 0, size_of::<u32>()) {
                 let mut conn = self.db_conn.take().unwrap();
                 if let Ok(model) = conn.find_by_id(item.text.parse().unwrap()) {
-                    *conn.model = Some(model);
-                    *self.security_window_handle.borrow_mut() =
-                        Some(SecurityFormWindow::window_open(Some(conn)));
-
-                    self.window.set_visible(false);
-
-                    let handle = self.security_window_handle.take();
-                    if let Some(handle) = handle {
-                        if let Ok(conn) = handle.join() {
-                            *self.db_conn.borrow_mut() = Some(conn);
-                            *self.security_window_handle.borrow_mut() = None;
-
-                            self.reload_menu_selected();
-
-                            self.window.set_visible(true);
-                        }
-                    }
-                } else {
-                    *self.db_conn.borrow_mut() = Some(conn);
+                    conn.set(model);
                 }
+                *self.security_window_handle.borrow_mut() = Some(SecurityFormWindow::window_open(
+                    Some(conn),
+                    self.security_form_notice.sender(),
+                ));
             }
         }
     }
@@ -1439,7 +1435,7 @@ impl SecurityApp {
                     {
                         let mut conn = self.db_conn.take().unwrap();
                         if let Ok(model) = conn.find_by_id(item.text.parse().unwrap()) {
-                            *conn.model = Some(model);
+                            conn.set(model);
                             match conn.delete() {
                                 Ok(num) => nwg::simple_message(
                                     "提示",

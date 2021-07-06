@@ -118,7 +118,25 @@ impl Model for SecurityModel {
                 String::from("dredging"),
                 String::from("time"),
             ],
-            ModelNameType::Header => todo!(),
+            ModelNameType::Header => vec![
+                String::from("编号"),
+                String::from("河道防洪排涝等级"),
+                String::from("河道名称"),
+                String::from("河道所属辖区"),
+                String::from("河道起点"),
+                String::from("河道终点"),
+                String::from("河道宽度(m)"),
+                String::from("边坡比"),
+                String::from("设计河底高程(m)"),
+                String::from("设计洪水水位(m)"),
+                String::from("是否允许浪爬高"),
+                String::from("安全超高(m)"),
+                String::from("淤积深度(m)"),
+                String::from("河槽宽度(m)"),
+                String::from("淤积阈值(m)"),
+                String::from("清淤判断"),
+                String::from("录入时间"),
+            ],
         }
     }
 
